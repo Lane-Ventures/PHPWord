@@ -19,6 +19,7 @@
 namespace PhpOffice\PhpWord;
 
 use DOMDocument;
+use DOMXPath;
 use PhpOffice\PhpWord\Escaper\RegExp;
 use PhpOffice\PhpWord\Escaper\Xml;
 use PhpOffice\PhpWord\Exception\CopyFileException;
@@ -159,6 +160,112 @@ class TemplateProcessor
     public function zip()
     {
         return $this->zipClass;
+    }
+
+    public function setImagesByAltText($data){
+
+        // FIRST GATHER THE PARTS
+        $this->tempDocumentMainPart = $this->setImagesInPart($this->tempDocumentMainPart, $data, null);
+
+    }
+
+    public function downloadAndAddImageToZip($imageUrl, $rid) {
+
+        $imageContent = file_get_contents($imageUrl);
+        if ($imageContent === false) {
+            throw new Exception("Failed to download image from URL: " . $imageUrl);
+        }
+
+        // Step 2: Determine the file extension based on MIME type
+        $fileInfo = new \finfo(FILEINFO_MIME_TYPE);
+        $mimeType = $fileInfo->buffer($imageContent);
+        $extension = $this->mimeToExtension($mimeType);
+        if ($extension === null) {
+            throw new Exception("Unsupported MIME type: " . $mimeType);
+        }
+
+        // Generate the filename using the RID and the determined extension
+        $fileName = "image_{$rid}." . $extension;
+        $tempImagePath = sys_get_temp_dir() . '/' . $fileName; // Path to save the temporary image
+        file_put_contents($tempImagePath, $imageContent); // Save the image content to a temporary file
+
+        // Step 3: Add the downloaded image to the ZIP
+        $this->zipClass->pclzipAddFile($tempImagePath, 'word/media/' . $fileName);
+
+    }
+
+    private function mimeToExtension($mimeType) {
+        $mimeMap = [
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/gif' => 'gif',
+            'image/bmp' => 'bmp',
+            'image/svg+xml' => 'svg',
+            // Add other MIME types and extensions as needed
+        ];
+
+        return $mimeMap[$mimeType] ?? null;
+    }
+
+    private function getImageAttributesFromPlaceholder($docPr) {
+        $attributes = [];
+
+        // Assuming $docPr is a DOMElement for <wp:docPr> in your document.
+        // The description is used as alt text.
+        $altText = $docPr->getAttribute('descr');
+        $attributes['altText'] = $altText;
+
+        // Navigate to the <a:blip> element to get the relationship ID.
+        // This is a simplified path; the actual path may vary based on your document structure.
+        $blipElement = $docPr->parentNode->getElementsByTagNameNS('http://schemas.openxmlformats.org/drawingml/2006/main', 'blip')->item(0);
+        if ($blipElement) {
+            $rId = $blipElement->getAttribute('r:embed'); // Or 'r:link', depending on how the image is referenced.
+            $attributes['rId'] = $rId;
+        }
+
+        return $attributes;
+    }
+
+
+    /**
+     * @throws Exception
+     */
+    private function setImagesInPart($part, $mappedData, $customQuery = null){
+
+        $domDocument = new DOMDocument();
+        $domDocument->loadXML($part);
+        $xpath = new DOMXPath($domDocument);
+
+        // REGISTER NECESSARY NAMESPACES
+        $xpath->registerNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main');
+        $xpath->registerNamespace('wp', 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing');
+        $xpath->registerNamespace('a', 'http://schemas.openxmlformats.org/drawingml/2006/main');
+        $xpath->registerNamespace('pic', 'http://schemas.openxmlformats.org/drawingml/2006/picture');
+        $xpath->registerNamespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
+
+        // CHECK FOR ANY CUSTOM QUERY, IF NOT USE STANDARD
+        $query = $customQuery ?: '//wp:docPr';
+        $imageNodes = $xpath->query($query);
+
+        // FOR EACH IMAGE FOUND
+        foreach ($imageNodes as $docPr) {
+            $altText = $docPr->getAttribute('descr');
+            // MAKE SURE ALT TEXT EXITS AND MATCHES A FIELD IN THE DOT NOTATED DATA
+            if($altText && isset($mappedData[$altText]) && $mappedData[$altText]){
+
+                // DETERMINE THE NEXT AVAILABLE RID
+                $rid = 'rid' . $this->getNextRelationsIndex($this->getMainPartName());
+                $varInlineArgs = $this->getImageAttributesFromPlaceholder($docPr);
+                // ADD THE IMAGE TO THE ZIP
+                $this->downloadAndAddImageToZip($mappedData[$altText], $rid);
+
+                var_dump($varInlineArgs);
+            }
+
+        }
+
+        // SAVE BACK TO XML
+        return $domDocument->saveXML();
     }
 
     /**
@@ -638,6 +745,10 @@ class TemplateProcessor
      */
     public function setImageValue($search, $replace, $limit = self::MAXIMUM_REPLACEMENTS_DEFAULT): void
     {
+
+
+
+
         // prepare $search_replace
         if (!is_array($search)) {
             $search = [$search];
