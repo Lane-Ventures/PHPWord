@@ -162,14 +162,97 @@ class TemplateProcessor
         return $this->zipClass;
     }
 
-    public function setImagesByAltText($data){
-
-        // FIRST GATHER THE PARTS
-        $this->tempDocumentMainPart = $this->setImagesInPart($this->tempDocumentMainPart, $data, null);
-
+    /**
+     * Scans the documents for images with alt text tags, then replaces them from external URLs
+     * Works with public S3 urls
+     * @param $data
+     * @return void
+     * @throws Exception
+     */
+    public function setImagesByAltText($mappedData){
+        // FIRST DO THE MAIN
+        $parts = [
+            $this->getMainPartName() => &$this->tempDocumentMainPart
+        ];
+        // NOW THE HEADERS
+        foreach (array_keys($this->tempDocumentHeaders) as $headerIndex) {
+            $parts[$this->getHeaderName($headerIndex)] = &$this->tempDocumentHeaders[$headerIndex];
+        }
+        // AND THE FOOTERS
+        foreach (array_keys($this->tempDocumentFooters) as $footerIndex) {
+            $parts[$this->getFooterName($footerIndex)] = &$this->tempDocumentFooters[$footerIndex];
+        }
+        // NOW ITERATE OVER OUR PARTS
+        foreach ($parts as $partFileName => &$partContent) {
+            $domXpathPart = $this->loadDocumentPartXML($partContent);
+            $matchingImages = $this->findImagesByAltTextInPart($domXpathPart);
+            foreach ($matchingImages as $imageInfo) {
+                $oldRid = $imageInfo['rId'];
+                $altText = $imageInfo['altText'];
+                // MAKE SURE ALT TEXT EXITS AND MATCHES A FIELD IN THE DOT NOTATED DATA
+                if(isset($mappedData[$altText]) && $mappedData[$altText]){
+                    // DETERMINE THE NEXT AVAILABLE RID FOR PART
+                    $newRid = 'rid' . $this->getNextRelationsIndex($partFileName);
+                    // DOWNLOAD THE REMOTE IMAGE AND STORE IN TEMP FILE
+                    $imageTempFile = $this->downloadRemoteImage($mappedData[$altText], $newRid);
+                    // NOW ADD THE FILE INTO THE RELATIONS
+                    $this->addImageToRelations($partFileName, $newRid, $imageTempFile['path'], $imageTempFile['mimeType']);
+                    // NOW REPLACE THE REFERENCE IN THE MXL TO THE NEWLY STORED AND RELATED IMAGE
+                    $domXpathPart = $this->updateImageReferenceInXML($domXpathPart, $oldRid, $newRid);
+                }
+            }
+            // NOW SAVE THE PART BACK TO THE VARIABLE
+            $partContent = $domXpathPart->document->saveXml();
+        }
     }
 
-    public function downloadAndAddImageToZip($imageUrl, $rid) {
+    private function updateImageReferenceInXML($domXpath, $oldID, $newID){
+        // Assume $xpath is your DOMXPath object with namespaces already registered
+        $query = "//a:blip[@r:embed='$oldID']";
+        $nodes = $domXpath->query($query);
+        foreach ($nodes as $node) {
+            // Update the 'r:embed' attribute to the new RID
+            $node->setAttribute('r:embed', $newID);
+        }
+
+        // Convert DOMDocument back to a string to save in the appropriate part
+        // This assumes $xpath->document has your DOMDocument
+        return $domXpath;
+    }
+
+    private function findImagesByAltTextInPart($XML, $customQuery = null){
+        $XML->registerNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main');
+        $XML->registerNamespace('wp', 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing');
+        $XML->registerNamespace('a', 'http://schemas.openxmlformats.org/drawingml/2006/main');
+        $XML->registerNamespace('pic', 'http://schemas.openxmlformats.org/drawingml/2006/picture');
+        $XML->registerNamespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
+        $query = $customQuery ?: '//wp:docPr';
+        $imageNodes = $XML->query($query);
+
+        $imagesWithRids = [];
+        foreach ($imageNodes as $docPr) {
+            $altText = $docPr->getAttribute('descr');
+            // Navigate to the <a:blip> element to find the rId
+            // This path may need to be adjusted based on your document's structure
+            $blipElement = $XML->query('.//ancestor::wp:anchor//a:graphic//a:graphicData//pic:pic//pic:blipFill//a:blip', $docPr)->item(0);
+            if ($blipElement && $altText) {
+                $rId = $blipElement->getAttribute('r:embed'); // Adjust based on whether you use 'r:embed' or 'r:link'
+                if ($rId) {
+                    $imagesWithRids[] = ['docPr' => $docPr, 'rId' => $rId, 'altText' => $altText];
+                }
+            }
+        }
+
+        return $imagesWithRids;
+    }
+
+    private function loadDocumentPartXML($partContent){
+        $domDocument = new DOMDocument();
+        $domDocument->loadXML($partContent);
+        return new DOMXPath($domDocument);
+    }
+
+    public function downloadRemoteImage($imageUrl, $rid) {
 
         $imageContent = file_get_contents($imageUrl);
         if ($imageContent === false) {
@@ -189,8 +272,12 @@ class TemplateProcessor
         $tempImagePath = sys_get_temp_dir() . '/' . $fileName; // Path to save the temporary image
         file_put_contents($tempImagePath, $imageContent); // Save the image content to a temporary file
 
-        // Step 3: Add the downloaded image to the ZIP
-        $this->zipClass->pclzipAddFile($tempImagePath, 'word/media/' . $fileName);
+        return [
+            "fileName" => $fileName,
+            "path" => $tempImagePath,
+            "extension" => $extension,
+            "mimeType" => $mimeType
+        ];
 
     }
 
@@ -224,48 +311,6 @@ class TemplateProcessor
         }
 
         return $attributes;
-    }
-
-
-    /**
-     * @throws Exception
-     */
-    private function setImagesInPart($part, $mappedData, $customQuery = null){
-
-        $domDocument = new DOMDocument();
-        $domDocument->loadXML($part);
-        $xpath = new DOMXPath($domDocument);
-
-        // REGISTER NECESSARY NAMESPACES
-        $xpath->registerNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main');
-        $xpath->registerNamespace('wp', 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing');
-        $xpath->registerNamespace('a', 'http://schemas.openxmlformats.org/drawingml/2006/main');
-        $xpath->registerNamespace('pic', 'http://schemas.openxmlformats.org/drawingml/2006/picture');
-        $xpath->registerNamespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
-
-        // CHECK FOR ANY CUSTOM QUERY, IF NOT USE STANDARD
-        $query = $customQuery ?: '//wp:docPr';
-        $imageNodes = $xpath->query($query);
-
-        // FOR EACH IMAGE FOUND
-        foreach ($imageNodes as $docPr) {
-            $altText = $docPr->getAttribute('descr');
-            // MAKE SURE ALT TEXT EXITS AND MATCHES A FIELD IN THE DOT NOTATED DATA
-            if($altText && isset($mappedData[$altText]) && $mappedData[$altText]){
-
-                // DETERMINE THE NEXT AVAILABLE RID
-                $rid = 'rid' . $this->getNextRelationsIndex($this->getMainPartName());
-                $varInlineArgs = $this->getImageAttributesFromPlaceholder($docPr);
-                // ADD THE IMAGE TO THE ZIP
-                $this->downloadAndAddImageToZip($mappedData[$altText], $rid);
-
-                var_dump($varInlineArgs);
-            }
-
-        }
-
-        // SAVE BACK TO XML
-        return $domDocument->saveXML();
     }
 
     /**
@@ -745,10 +790,6 @@ class TemplateProcessor
      */
     public function setImageValue($search, $replace, $limit = self::MAXIMUM_REPLACEMENTS_DEFAULT): void
     {
-
-
-
-
         // prepare $search_replace
         if (!is_array($search)) {
             $search = [$search];
