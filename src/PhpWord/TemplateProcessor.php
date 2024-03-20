@@ -189,6 +189,7 @@ class TemplateProcessor
             foreach ($matchingImages as $imageInfo) {
                 $oldRid = $imageInfo['rId'];
                 $altText = $imageInfo['altText'];
+
                 // MAKE SURE ALT TEXT EXITS AND MATCHES A FIELD IN THE DOT NOTATED DATA
                 if(isset($mappedData[$altText]) && $mappedData[$altText]){
                     // DETERMINE THE NEXT AVAILABLE RID FOR PART
@@ -231,10 +232,12 @@ class TemplateProcessor
 
         $imagesWithRids = [];
         foreach ($imageNodes as $docPr) {
-            $altText = $docPr->getAttribute('descr');
+            $altText = preg_replace('/\s+/', '', $docPr->getAttribute('descr'));
             // Navigate to the <a:blip> element to find the rId
             // This path may need to be adjusted based on your document's structure
-            $blipElement = $XML->query('.//ancestor::wp:anchor//a:graphic//a:graphicData//pic:pic//pic:blipFill//a:blip', $docPr)->item(0);
+            $blipElementQuery = './/ancestor::w:drawing//a:blip | .//ancestor::wp:anchor//a:blip';
+            $blipElements = $XML->query($blipElementQuery, $docPr);
+            $blipElement = $blipElements->length > 0 ? $blipElements->item(0) : null;
             if ($blipElement && $altText) {
                 $rId = $blipElement->getAttribute('r:embed'); // Adjust based on whether you use 'r:embed' or 'r:link'
                 if ($rId) {
