@@ -199,7 +199,7 @@ class TemplateProcessor
                     // NOW ADD THE FILE INTO THE RELATIONS
                     $this->addImageToRelations($partFileName, $newRid, $imageTempFile['path'], $imageTempFile['mimeType']);
                     // NOW REPLACE THE REFERENCE IN THE MXL TO THE NEWLY STORED AND RELATED IMAGE
-                    $domXpathPart = $this->updateImageReferenceInXML($domXpathPart, $oldRid, $newRid);
+                    $domXpathPart = $this->updateImageReferenceInXML($domXpathPart, $oldRid, $newRid, $imageInfo['docPr']);
                 }
             }
             // NOW SAVE THE PART BACK TO THE VARIABLE
@@ -207,11 +207,11 @@ class TemplateProcessor
         }
     }
 
-    private function updateImageReferenceInXML($domXpath, $oldID, $newID){
+    private function updateImageReferenceInXML($domXpath, $oldID, $newID, $docPr){
         // Assume $xpath is your DOMXPath object with namespaces already registered
-        $query = "//a:blip[@r:embed='$oldID']";
-        $nodes = $domXpath->query($query);
-        foreach ($nodes as $node) {
+        $blipElementQuery = './/ancestor::w:drawing//a:blip | .//ancestor::wp:anchor//a:blip';
+        $blipElements = $domXpath->query($blipElementQuery, $docPr);
+        foreach ($blipElements as $node) {
             // Update the 'r:embed' attribute to the new RID
             $node->setAttribute('r:embed', $newID);
         }
