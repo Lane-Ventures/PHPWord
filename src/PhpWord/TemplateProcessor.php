@@ -1654,4 +1654,59 @@ class TemplateProcessor
     {
         return $this->tempDocumentFilename;
     }
+
+
+    /*
+     * HANDLE "For" loops for rendering iteratively
+     *
+    */
+
+    public function processForLoops(&$documentPart, $data) {
+        $pattern = '/\$for\{([^,]+),([^\}]+)\}(.*?)\$endfor/s';
+
+        while (preg_match($pattern, $documentPart, $matches)) {
+            list($fullMatch, $arrayPath, $itemName, $contentTemplate) = $matches;
+
+            // Access the nested array using dot notation
+            $arrayData = $this->getArrayDataByPath($data, $arrayPath);
+            $replacement = '';
+
+            foreach ($arrayData as $item) {
+                // Create a temporary template to be filled with the current item's data
+                $itemTemplate = $contentTemplate;
+
+                // Recursive call to handle nested loops (pass $itemTemplate by reference)
+                $this->processForLoops($itemTemplate, [$itemName => $item]);
+
+                // Replace item-specific placeholders in the item template
+                $itemReplacement = preg_replace_callback('/\{' . preg_quote($itemName) . '\.(.+?)\}/', function ($match) use ($item) {
+                    return $this->getValueFromItem($item, $match[1]);
+                }, $itemTemplate);
+
+                $replacement .= $itemReplacement;
+            }
+
+            // Replace the full loop block with the aggregated replacements
+            $documentPart = str_replace($fullMatch, $replacement, $documentPart);
+        }
+    }
+
+    private function getArrayDataByPath($data, $path) {
+        $pathParts = explode('.', $path);
+        foreach ($pathParts as $part) {
+            if (isset($data[$part])) {
+                $data = $data[$part];
+            } else {
+                // Path not found
+                return [];
+            }
+        }
+        return $data;
+    }
+
+    private function getValueFromItem($item, $key) {
+        // Assume flat structure or provide for deeper navigation if needed
+        return $item[$key] ?? '';
+    }
+
 }
