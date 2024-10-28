@@ -69,11 +69,11 @@
         "ext-json": "*",
         "ext-xml": "*",
         "phpoffice/math": "^0.1",
-        "ext-fileinfo": "*"
+        "ext-fileinfo": "*",
+        "ext-gd": "*"
     },
     "require-dev": {
         "ext-zip": "*",
-        "ext-gd": "*",
         "ext-libxml": "*",
         "dompdf/dompdf": "^2.0",
         "mpdf/mpdf": "^8.1",

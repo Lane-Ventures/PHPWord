@@ -256,13 +256,12 @@ class TemplateProcessor
     }
 
     public function downloadRemoteImage($imageUrl, $rid) {
-
         $imageContent = file_get_contents($imageUrl);
         if ($imageContent === false) {
             throw new Exception("Failed to download image from URL: " . $imageUrl);
         }
 
-        // Step 2: Determine the file extension based on MIME type
+        // Determine the file extension based on MIME type
         $fileInfo = new \finfo(FILEINFO_MIME_TYPE);
         $mimeType = $fileInfo->buffer($imageContent);
         $extension = $this->mimeToExtension($mimeType);
@@ -275,14 +274,42 @@ class TemplateProcessor
         $tempImagePath = sys_get_temp_dir() . '/' . $fileName; // Path to save the temporary image
         file_put_contents($tempImagePath, $imageContent); // Save the image content to a temporary file
 
+        // Correct image orientation if needed
+        $this->correctImageOrientation($tempImagePath);
+
         return [
             "fileName" => $fileName,
             "path" => $tempImagePath,
             "extension" => $extension,
             "mimeType" => $mimeType
         ];
-
     }
+
+    private function correctImageOrientation($filename) {
+        if (function_exists('exif_read_data')) {
+            $exif = @exif_read_data($filename);
+            if ($exif && isset($exif['Orientation'])) {
+                $orientation = $exif['Orientation'];
+                if ($orientation != 1) {
+                    $img = imagecreatefromjpeg($filename);
+                    switch ($orientation) {
+                        case 3:
+                            $img = imagerotate($img, 180, 0);
+                            break;
+                        case 6:
+                            $img = imagerotate($img, -90, 0);
+                            break;
+                        case 8:
+                            $img = imagerotate($img, 90, 0);
+                            break;
+                    }
+                    imagejpeg($img, $filename, 95);
+                    imagedestroy($img);
+                }
+            }
+        }
+    }
+
 
     private function mimeToExtension($mimeType) {
         $mimeMap = [
